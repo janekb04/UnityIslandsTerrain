@@ -1,0 +1,110 @@
+﻿RWTexture2D<float> Result;
+float4 Rect;
+
+// ------------------------------------------------------ Generate Base -------------------------------------------------------------
+#pragma kernel GenerateBase
+#include "noiseSimplex.cginc"
+
+float TransformRange(float oldMin, float oldMax, float newMin, float newMax, float value)
+{
+    return (((value - oldMin) * (newMax - newMin)) / (oldMax - oldMin)) + newMin;
+}
+
+//Returns height in range [0, 1]
+float HeightAtPosition(float2 position, int octaves)
+{
+    float height = 0;
+    float weight = 0.5;
+    for (int i = 0; i < octaves; ++i)
+    {
+        float delta = snoise(position) * 0.5f + 0.5f;
+        height += delta * weight;
+        position *= 2;
+        weight /= 2;
+    }
+    height = TransformRange(0.13, 1 - 0.13, 0, 1, height);
+
+    return height;
+}
+
+float RoundToNearest(float value, float nearest)
+{
+    return round(value / nearest) * nearest;
+}
+
+float QAtPosition(float2 position)
+{
+    float noise = snoise(position / 10) * 0.5f + 0.5f;
+    return TransformRange(0, 1, 0.05, 0.25, noise);
+}
+
+float MagicTranform(float h, float q)
+{
+    float temp = h - 0.39;
+    return 2.5 * temp * temp * temp + q;
+}
+
+[numthreads(8, 8, 1)]
+void GenerateBase (uint3 id : SV_DispatchThreadID)
+{
+    float w, h;
+    Result.GetDimensions(w, h);
+    float2 textureSize = float2(w, h);
+    
+    float2 position = float2(
+        lerp(Rect.x, Rect.y, id.x / (w - 1)),
+        lerp(Rect.z, Rect.w, id.y / (h - 1))
+    );
+
+    float q = QAtPosition(position);
+    float height = HeightAtPosition(position, 10);
+    float ocean = HeightAtPosition(position / 10 + float2(1725, 139), 10);
+    float transformed = MagicTranform(height, q);
+
+    Result[id.xy] = transformed * TransformRange(0.8, 0.9, 0, 1, clamp(0.8, 0.9, ocean));
+}
+
+//------------------------------------------------------------- Erode ------------------------------------------
+#pragma kernel Erode
+
+
+
+[numthreads(8, 8, 1)]
+void Erode(uint3 id : SV_DispatchThreadID)
+{
+    float height = Result[id.xy];
+
+    int radius = 5;
+    for (int iter = 0; iter < 1; ++iter)
+    {
+        #define SAMPLES 4
+        int2 samples[SAMPLES] = {
+            int2(1, 1),
+            int2(-1, 1),
+            int2(1, -1),
+            int2(-1, -1)
+        };
+        float heights[SAMPLES];
+        float average = 0;
+
+        float weight = 0;
+        for (int i = 0; i < SAMPLES; ++i)
+        {
+            heights[i] = Result[id + radius * samples[i]];
+            average += heights[i];
+        }
+        average /= SAMPLES;
+
+        float roughness = 0;
+        for (int i = 0; i < SAMPLES; ++i)
+        {
+            roughness += abs(heights[i] - average);
+        }
+        roughness /= average * SAMPLES;
+
+        height = lerp(average, height, roughness);
+
+        radius /= 2;
+    }
+    Result[id.xy] = height * height;
+}
